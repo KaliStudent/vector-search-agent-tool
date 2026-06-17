@@ -1,0 +1,153 @@
+const FEEDS = [
+  { name: 'AI Magazine', url: 'https://aimagazine.com' },
+  { name: 'The Rundown', url: 'https://www.therundown.ai/' },
+  { name: 'Open AI News', url: 'https:openai.com/news' },
+  { name: 'Towards AI News', url: 'https://towardsai.net/p' },
+  { name: 'Google Reasearch Blog', url: 'https://research.google/blog/' },
+  { name: 'Apple Machine Learning News', url: 'https://machinelearning.apple.com/research' },
+  { name: 'Google Deepmind Blog', url: 'https://deepmind.google/blog/' },
+  { name: 'Celonis', url: 'https://www.celonis.com/insights' },
+  { name: "MIT AI News", url: 'https://news.mit.edu/topic/artificial-intelligence2' },
+  { name: 'GlassyOwl', url: 'https://www.glassyowl.com/feed/' },
+  { name: 'TechCrunch AI News', url: 'techcrunch.com/ai' },
+  { name: 'Deeplearning AI News', url: 'https://www.deeplearning.ai/the-batch' },
+  { name: 'Reuters AI News', url: 'https://www.reuters.com/technology/artificial-intelligence/' },
+  { name: 'GeekWire AI Stories', url: 'https://www.geekwire.com/feed/' },
+  { name: 'a16z AI Headlines', url: 'https://www.a16z.news/p/top-100-gen-ai-consumer-apps-march' },
+];
+
+const CACHE_KEY = 'aggregated-feed';
+const CACHE_TTL = 300; // 5 minutes
+
+function escapeXml(str) {
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+}
+
+function parseFeedItems(xml, sourceName) {
+  const items = [];
+  // Match RSS <item> blocks
+  const itemRegex = /<item[\s\S]*?>([\s\S]*?)<\/item>/gi;
+  let match;
+  while ((match = itemRegex.exec(xml)) !== null) {
+    const block = match[1];
+    const title = block.match(/<title>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/title>/i)?.[1]?.trim();
+    const link = block.match(/<link>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/link>/i)?.[1]?.trim();
+    const pubDate = block.match(/<pubDate>([\s\S]*?)<\/pubDate>/i)?.[1]?.trim();
+    const description = block.match(/<description>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/description>/i)?.[1]?.trim();
+    if (title && link) {
+      items.push({ title, link, pubDate: pubDate || '', description: description || '', source: sourceName });
+    }
+  }
+  // Match Atom <entry> blocks
+  const entryRegex = /<entry[\s\S]*?>([\s\S]*?)<\/entry>/gi;
+  while ((match = entryRegex.exec(xml)) !== null) {
+    const block = match[1];
+    const title = block.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1]?.trim();
+    const link = block.match(/<link[^>]*href="([^"]*)"[^>]*\/?>/i)?.[1]?.trim() ||
+                 block.match(/<link[^>]*>([\s\S]*?)<\/link>/i)?.[1]?.trim();
+    const pubDate = block.match(/<published>([\s\S]*?)<\/published>/i)?.[1]?.trim() ||
+                    block.match(/<updated>([\s\S]*?)<\/updated>/i)?.[1]?.trim();
+    const description = block.match(/<summary[^>]*>([\s\S]*?)<\/summary>/i)?.[1]?.trim() ||
+                        block.match(/<content[^>]*>([\s\S]*?)<\/content>/i)?.[1]?.trim() || '';
+    if (title && link) {
+      items.push({ title, link, pubDate: pubDate || '', description: description || '', source: sourceName });
+    }
+  }
+  return items;
+}
+
+function buildRssXml(items) {
+  const rssItems = items.map(i => `    <item>
+      <title>${escapeXml(i.title)}</title>
+      <link>${escapeXml(i.link)}</link>
+      <pubDate>${escapeXml(i.pubDate)}</pubDate>
+      <description>${escapeXml(i.description ? i.description.substring(0, 300) : '')}</description>
+      <source>${escapeXml(i.source)}</source>
+    </item>`).join('\n');
+
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">
+  <channel>
+    <title>Tech News Aggregator</title>
+    <link>https://rss-aggregator.workers.dev</link>
+    <description>Top AI News Stories of The Day</description>
+    <atom:link href="https://rss-aggregator.workers.dev" rel="self" type="application/rss+xml" />
+    <language>en-us</language>
+    <lastBuildDate>${new Date().toUTCString()}</lastBuildDate>
+${rssItems}
+  </channel>
+</rss>`;
+}
+
+async function aggregateFeeds() {
+  const responses = await Promise.allSettled(
+    FEEDS.map(async (feed) => {
+      try {
+        const resp = await fetch(feed.url, {
+          headers: { 'User-Agent': 'Cloudflare-Workers-RSS-Aggregator/1.0' },
+          cf: { cacheTtl: 60 },
+        });
+        if (!resp.ok) return [];
+        const xml = await resp.text();
+        return parseFeedItems(xml, feed.name);
+      } catch {
+        return [];
+      }
+    })
+  );
+
+  const allItems = responses
+    .filter(r => r.status === 'fulfilled')
+    .flatMap(r => r.value);
+
+  // Sort by date (newest first)
+  allItems.sort((a, b) => {
+    const dateA = a.pubDate ? new Date(a.pubDate) : new Date(0);
+    const dateB = b.pubDate ? new Date(b.pubDate) : new Date(0);
+    return dateB - dateA;
+  });
+
+  // Take top 50
+  return allItems.slice(0, 50);
+}
+
+export default {
+  async fetch(request, env) {
+    // Try to serve from KV cache first
+    const cached = await env.RSS_CACHE.get(CACHE_KEY, { type: 'text' });
+    if (cached) {
+      return new Response(cached, {
+        headers: {
+          'Content-Type': 'application/xml; charset=utf-8',
+          'Cache-Control': 'public, max-age=300',
+        },
+      });
+    }
+
+    // Aggregate feeds
+    const items = await aggregateFeeds();
+    const xml = buildRssXml(items);
+
+    // Store in KV with TTL
+    await env.RSS_CACHE.put(CACHE_KEY, xml, { expirationTtl: CACHE_TTL });
+
+    return new Response(xml, {
+      headers: {
+        'Content-Type': 'application/xml; charset=utf-8',
+        'Cache-Control': 'public, max-age=300',
+      },
+    });
+  },
+
+  async scheduled(event, env, ctx) {
+    // Pre-fetch and cache on schedule
+    const items = await aggregateFeeds();
+    const xml = buildRssXml(items);
+    await env.RSS_CACHE.put(CACHE_KEY, xml, { expirationTtl: CACHE_TTL });
+  },
+};
