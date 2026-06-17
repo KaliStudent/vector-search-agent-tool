@@ -1,0 +1,31 @@
+{
+	"name": "rss-aggregator-ai-news",
+	"main": "src/index.js",
+	"workers_dev": true,
+	"preview_urls": true,
+	"compatibility_date": "2026-06-01",
+	"compatibility_flags": [
+		"nodejs_compat"
+	],
+	"routes": [
+		{
+			"pattern": "technews.abcw.xyz",
+			"zone_name": "abcw.xyz",
+			"custom_domain": true,
+			"enabled": true,
+			"previews_enabled": false
+		}
+	],
+	"kv_namespaces": [
+		{
+			"id": "a5030f5f60674b78be9a2acfb6c497bc",
+			"binding": "RSS_CACHE"
+		}
+	],
+	"vectorize": [
+		{
+			"binding": "VECTORIZE",
+			"index_name": "rss-feed-vectors"
+		}
+	]
+}

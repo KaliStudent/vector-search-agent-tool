@@ -1,0 +1,14 @@
+name = "rss-aggregator-ai-news"
+main = "src/index.js"
+compatibility_date = "2026-06-17"
+
+[[vectorize]]
+binding = "VECTORIZE"
+index_name = "rss-feed-vectors"
+
+[[kv_namespaces]]
+binding = "RSS_CACHE"
+id = "a5030f5f60674b78be9a2acfb6c497bc"
+
+[ai]
+binding = "AI"
